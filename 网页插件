@@ -1,0 +1,148 @@
+from playwright.sync_api import sync_playwright, TimeoutError, Page
+import re
+import time
+
+
+def run(playwright) -> None:
+    try:
+        # 连接到已打开的浏览器
+        browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9222")
+        print("成功连接到浏览器")
+
+        # 获取所有上下文和页面，查找标题为"电力交易平台"的页面
+        target_page = None
+        for context in browser.contexts:
+            for page in context.pages:
+                if "电力交易平台" in page.title():
+                    target_page = page
+                    break
+            if target_page:
+                break
+
+        if not target_page:
+            raise ValueError("未找到标题包含'电力交易平台'的页面")
+
+        page = target_page
+
+        print(f"已获取目标页面: {page.title()}")
+
+        # 辅助函数：等待并点击元素，支持多种定位方式
+        def wait_and_click(page: Page, selector: str = None, role: str = None, name: str = None, text: str = None,
+                           timeout: int = 10000):
+            element = None
+            try:
+                if role and name:
+                    element = page.get_by_role(role, name=name)
+                elif text:
+                    element = page.get_by_text(text, exact=True)
+                elif selector:
+                    element = page.locator(selector)
+
+                if not element:
+                    raise ValueError("至少需要提供一种定位方式")
+
+                element.wait_for(state="visible", timeout=timeout)
+                element.click()
+                print(f"成功点击元素: {name or text or selector}")
+                return True
+            except TimeoutError:
+                print(f"超时: 找不到元素 {name or text or selector}")
+                return False
+            except Exception as e:
+                print(f"点击元素时出错: {e}")
+                return False
+
+        # 导航到目标页面 - 尝试多种定位策略
+        # 尝试1：使用原选择器（包含特殊字符）
+        if not wait_and_click(page, role="treeitem", name=" 省内中长期交易"):
+            # 尝试2：移除特殊字符
+            wait_and_click(page, role="treeitem", name="省内中长期交易")
+            # 尝试3：使用文本选择器
+            wait_and_click(page, text="省内中长期交易")
+            # 尝试4：使用XPath选择器
+            wait_and_click(page, selector='//span[contains(text(), "省内中长期交易")]')
+
+        # 对后续操作应用相同的重试逻辑
+        wait_and_click(page, role="treeitem", name=" 能量块交易") or \
+        wait_and_click(page, role="treeitem", name="能量块交易") or \
+        wait_and_click(page, text="能量块交易")
+
+        # 关键修改点：点击后等待页面刷新完成
+        if wait_and_click(page, text="日滚动交易挂牌"):
+            print("点击日滚动交易挂牌后，等待页面刷新...")
+
+            # 方法1：等待特定元素出现（根据实际页面修改选择器）
+            page.wait_for_selector("#pxf-retail-out", timeout=10000)
+
+            # 方法2：等待网络请求完成
+            # with page.expect_network_idle():
+            #     pass
+
+            # 方法3：等待一段时间（不推荐，但简单有效）
+            # time.sleep(3)
+
+            print("页面刷新完成，继续执行后续操作")
+        else:
+            print("无法点击'日滚动交易挂牌'，退出程序")
+            return
+
+        # 处理iframe中的元素
+        try:
+            print("尝试访问iframe内容")
+
+            # 关键修改点：每次都重新获取iframe引用
+            def get_iframe():
+                frame = page.locator("#pxf-retail-out").content_frame()
+                if not frame:
+                    print("无法获取iframe内容，尝试使用XPath定位")
+                    frame = page.locator('//iframe[contains(@id, "pxf-retail-out")]').content_frame()
+                return frame
+
+            frame = get_iframe()
+            if not frame:
+                print("仍无法获取iframe内容，退出iframe处理")
+                return
+
+            print("开始填写表单...")
+
+            # 日期选择
+            wait_and_click(frame, selector=".el-date-editor > .el-input__inner")
+            wait_and_click(frame, text="29", nth=1)
+
+            # 时段类型选择
+            wait_and_click(frame,
+                           selector='form div:has-text("时段类型00:00~01:0001:00~02:0002:") .el-input__placeholder')
+            wait_and_click(frame, text="13:00~14:00")
+
+            # 操作类型选择
+            wait_and_click(frame, selector='label:has-text("增 持")')
+
+            # 填写挂牌电价
+            price_input = frame.get_by_role("textbox", name="请输入挂牌电价")
+            price_input.click()
+            price_input.fill("1")
+
+            # 填写挂牌电量
+            volume_input = frame.get_by_role("textbox", name="请输入挂牌电量")
+            volume_input.click()
+            volume_input.fill("1")
+
+            # 重新填写挂牌电价
+            price_input.click()
+            price_input.fill("283.6")
+
+            print("表单填写完成")
+
+        except Exception as e:
+            print(f"处理iframe时出错: {e}")
+
+        input("按Enter键退出...")
+
+    except Exception as e:
+        print(f"执行过程中出错: {e}")
+    finally:
+        pass
+
+
+with sync_playwright() as playwright:
+    run(playwright)
